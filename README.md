@@ -8,13 +8,13 @@
 
 <br />
 <div align="center">
-  <h1>template</h1>
+  <h1>boltfx</h1>
   <p>
-    Uber Fx module template — the starting point for a new <code>go-core-fx</code> library module, with a named logger, strict lint config, Makefile and CI workflow out of the box.
+    Uber Fx module for bbolt (BoltDB) — opens an embedded key/value database from a <code>bolt://</code> URL and ties its lifetime to the Fx application lifecycle.
   </p>
-  <a href="https://github.com/go-core-fx/template/issues/new">Report Bug</a>
+  <a href="https://github.com/go-core-fx/boltfx/issues/new">Report Bug</a>
   &middot;
-  <a href="https://github.com/go-core-fx/template/issues/new">Request Feature</a>
+  <a href="https://github.com/go-core-fx/boltfx/issues/new">Request Feature</a>
 </div>
 
 ## Table of Contents
@@ -26,10 +26,12 @@
 	- [Prerequisites](#prerequisites)
 	- [Installation](#installation)
 - [Usage](#usage)
-	- [Starting a New Module](#starting-a-new-module)
 	- [Module Setup](#module-setup)
-	- [Adding Your Providers](#adding-your-providers)
+	- [Standalone Use](#standalone-use)
+	- [Errors](#errors)
 - [Configuration](#configuration)
+	- [Database location](#database-location)
+	- [Environment variables](#environment-variables)
 - [Development](#development)
 	- [Make Targets](#make-targets)
 	- [Continuous Integration](#continuous-integration)
@@ -37,32 +39,33 @@
 - [License](#license)
 - [Acknowledgments](#acknowledgments)
 
-
 ---
 
 ## About The Project
 
-`template` is the starter repository for a new library module in the [go-core-fx](https://github.com/go-core-fx) ecosystem. It contains a single `module.go` that registers an [Uber Fx](https://uber-go.github.io/fx/) module named after the module constant and decorates the injected `*zap.Logger` with that name, plus the tooling the sibling modules share:
+`boltfx` is the [go-core-fx](https://github.com/go-core-fx) module for [bbolt](https://github.com/etcd-io/bbolt) (BoltDB), the embedded transactional key/value store. It turns a `bolt://` URL into an open `*bbolt.DB`, hands the handle to the rest of the Fx graph, and closes it when the application stops — so consumers never have to manage the database file lifecycle themselves.
 
-- **One-file module skeleton** — `Module()` returns an `fx.Option` built with `fx.Module`, ready for your `fx.Provide` and `fx.Invoke` entries
-- **Named logger** — every logger handed to code inside the module is `logger.Named(ModuleName)`, so log lines from different modules are distinguishable
-- **Strict lint config** — a v2.14.0 golangci-lint configuration with a large strict-but-practical linter set
-- **Makefile + CI** — formatting, linting, race-enabled tests, coverage, benchmarks, and a GitHub Actions workflow that runs them
+- **One-file module** — `boltfx.Module()` returns an `fx.Option` that provides the `*bbolt.DB` and registers the close hook
+- **URL-based configuration** — the database location is a `bolt://` URL: relative paths (`bolt://data/app.db`) and absolute paths (`bolt:///var/lib/app.db`) both work
+- **Fail-fast startup** — an insecure database file, a foreign URL scheme, a missing path or a file locked by another process is rejected before the application starts serving
+- **Named logger** — the module decorates the injected `*zap.Logger` with `boltfx`, so its log lines are distinguishable from other modules
 
-This is a library, not an application: it reads **no environment variables** of its own and has no configuration file. `DEBUG` is read by the [`go-core-fx/logger`](https://github.com/go-core-fx/logger) dependency, and `TZ`/`DEBUG` are set for the development server by `make air` — see [Configuration](#configuration).
+This is a library, not an application: it reads **no environment variables** of its own. `DEBUG` is read by the [`go-core-fx/logger`](https://github.com/go-core-fx/logger) dependency, and `TZ`/`DEBUG` are set for the development server by `make air` — see [Configuration](#configuration).
 
 ### Features
 
-- **Uber Fx module** — `template.Module()` registers module `"template"` and decorates the `*zap.Logger` with the module name
-- **Works with `logger.Module()`** — the decorator composes with `go-core-fx/logger`'s provider, or with any `*zap.Logger` your application provides
-- **Zero application code** — the template ships only `module.go`; you add domain code, providers and options
+- **Fx lifecycle management** — `boltfx.Module()` provides `*bbolt.DB` to the graph and closes it on the Fx stop hook, with start/stop log lines carrying the database path
+- **`bolt://` URL parsing** — a URL with a host yields a path relative to the working directory; a URL with an empty host yields an absolute path
+- **Database file permission guard** — an existing database file that users other than the owner can read or write is rejected; files the module creates are mode `0600`
+- **Bounded lock wait** — a database file locked by another process fails after 1 second instead of blocking startup
+- **Sentinel errors** — every failure wraps one of four exported errors, so callers can classify with `errors.Is`
 - **Strict golangci-lint** — the same golden config used across the go-core-fx modules
-- **CI pipeline** — lint, race-enabled tests with coverage upload to Codecov, and benchmark tracking with alerting
 
 ### Built With
 
 - [![Go](https://img.shields.io/badge/Go-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
 - [![Uber Fx](https://img.shields.io/badge/Uber%20Fx-000000?style=for-the-badge)](https://uber-go.github.io/fx/)
+- [![bbolt](https://img.shields.io/badge/go.etcd.io%2Fbbolt-417186?style=for-the-badge)](https://github.com/etcd-io/bbolt)
 - [![zap](https://img.shields.io/badge/go.uber.org%2Fzap-00ADD8?style=for-the-badge)](https://github.com/uber-go/zap)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -79,12 +82,11 @@ This is a library, not an application: it reads **no environment variables** of 
 
 ### Installation
 
-Clone this repository as the root of your new module:
-
 ```bash
-git clone https://github.com/go-core-fx/template.git mymodule
-cd mymodule
+go get github.com/go-core-fx/boltfx
 ```
+
+The module has no tagged release yet, so `go get` resolves a pseudo-version from the default branch until the first tag is cut.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -92,72 +94,96 @@ cd mymodule
 
 ## Usage
 
-### Starting a New Module
-
-Rename the module path and the module constant, then drop the template remote and point the repository at your own:
-
-```bash
-go mod edit -module github.com/you/mymodule
-git remote set-url origin git@github.com:you/mymodule.git
-```
-
-Then edit `module.go`: change the package name, `ModuleName` (it must match your directory name), and the import of `github.com/go-core-fx/logger` if you keep it.
-
 ### Module Setup
 
-`Module()` composes with the logger module and any providers you add. A minimal application wiring:
+Add `boltfx.Module()` to your Fx options and provide a `boltfx.Config` anywhere in the graph — the module opens the database from it and closes it on stop:
 
 ```go
 package main
 
 import (
+	"github.com/go-core-fx/boltfx"
 	"github.com/go-core-fx/logger"
-	"github.com/go-core-fx/template"
+	bolt "go.etcd.io/bbolt"
 	"go.uber.org/fx"
 )
 
 func main() {
 	fx.New(
 		logger.Module(),
-		template.Module(),
+		fx.Provide(func() boltfx.Config {
+			return boltfx.Config{URL: "bolt://data/app.db"}
+		}),
+		boltfx.Module(),
+		fx.Invoke(func(db *bolt.DB) {
+			// use the database; it is closed when the application stops
+		}),
 	).Run()
 }
 ```
 
-Inside the module, `logger.WithNamedLogger(ModuleName)` decorates the `*zap.Logger`, so any constructor provided by the module logs under the module name:
-
-```go
-const ModuleName = "template"
-
-func Module() fx.Option {
-	return fx.Module(
-		ModuleName,
-		logger.WithNamedLogger(ModuleName),
-		// fx.Provide(New),
-	)
-}
-```
-
-### Adding Your Providers
-
-Replace the commented line with your own constructors:
+Inside the module, `logger.WithNamedLogger("boltfx")` decorates the `*zap.Logger`, so the open, start and shutdown log lines are tagged with the module name:
 
 ```go
 func Module() fx.Option {
 	return fx.Module(
-		ModuleName,
-		logger.WithNamedLogger(ModuleName),
+		"boltfx",
+		logger.WithNamedLogger("boltfx"),
 		fx.Provide(New),
-		fx.Invoke(Register),
+		fx.Invoke(registerLifecycle),
 	)
 }
 ```
+
+The parent directory of the database file is **not** created — it must exist before the application starts.
+
+### Standalone Use
+
+Outside an Fx application, `boltfx.New` opens the database without tying it to a lifecycle. The caller owns the returned handle and must close it:
+
+```go
+db, err := boltfx.New(boltfx.Config{URL: "bolt:///var/lib/app.db"}, logger)
+if err != nil {
+	return err
+}
+defer db.Close()
+```
+
+### Errors
+
+Every failure wraps one of these exported sentinel errors — classify with `errors.Is`:
+
+| Error              | Returned when                                                                            |
+| ------------------ | ---------------------------------------------------------------------------------------- |
+| `ErrEmptyURL`      | `Config.URL` is empty or carries no path (`bolt://`, `bolt:///`)                         |
+| `ErrInvalidScheme` | `Config.URL` cannot be parsed or its scheme is not `bolt`                                |
+| `ErrOpenFailed`    | The database file cannot be opened — locked by another process, or the parent is missing |
+| `ErrInsecureFile`  | The database file exists with permissions that let users other than the owner access it  |
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ---
 
 ## Configuration
+
+### Database location
+
+The module's only setting is `boltfx.Config.URL`:
+
+| URL form                       | Resolves to                                      |
+| ------------------------------ | ------------------------------------------------ |
+| `bolt://data/app.db`           | `data/app.db`, relative to the working directory |
+| `bolt:///var/lib/app.db`       | `/var/lib/app.db`, absolute                      |
+| empty, `bolt://` or `bolt:///` | rejected with `ErrEmptyURL`                      |
+| anything else                  | rejected with `ErrInvalidScheme`                 |
+
+Behavior worth knowing before production use:
+
+- The database file is created with mode `0600`; an existing file with any other-user access is rejected with `ErrInsecureFile`
+- A file locked by another process fails after a 1-second timeout with `ErrOpenFailed`
+- The parent directory is not created
+
+### Environment variables
 
 This module itself reads no environment variables. The table below lists everything the repository and its direct dependency consume:
 
@@ -166,8 +192,6 @@ This module itself reads no environment variables. The table below lists everyth
 | `DEBUG`         | `github.com/go-core-fx/logger` (`logger.New`) | Selects the zap development logger (console encoding, debug level) instead of the production logger | Boolean accepted by `strconv.ParseBool` (`1`, `t`, `T`, `TRUE`, `true`, …) | unset → treated as `false` → production logger | `1`                  |
 | `TZ`            | `make air` (Makefile)                         | Timezone of the development server process                                                          | IANA timezone name                                                         | system local timezone                          | `UTC`                |
 | `CODECOV_TOKEN` | Codecov GitHub Action (CI only)               | Uploads coverage reports from the `test` workflow job                                               | Opaque token, stored as a GitHub Actions secret                            | not set                                        | `your-codecov-token` |
-
-See [`.env.example`](.env.example) for the commented copy-paste version.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -186,6 +210,7 @@ See [`.env.example`](.env.example) for the commented copy-paste version.
 | `make test`      | Run tests with race detector, shuffle and atomic coverage              |
 | `make coverage`  | Produce `coverage.out` and an HTML report (`coverage.html`)            |
 | `make benchmark` | Run benchmarks into `benchmark.txt`                                    |
+| `make air`       | Run the development server with air (`TZ=UTC DEBUG=1`)                 |
 | `make deps`      | Download module dependencies                                           |
 | `make gen`       | Run `go generate ./...`                                                |
 | `make clean`     | Remove coverage output, benchmarks, `dist/` and `bin/`                 |
@@ -232,20 +257,21 @@ Distributed under the Apache License 2.0. See `LICENSE` for more information.
 ## Acknowledgments
 
 - [Uber Fx](https://uber-go.github.io/fx/) — dependency injection framework
-- [go-core-fx/logger](https://github.com/go-core-fx/logger) — zap logger module the template decorates
+- [bbolt](https://github.com/etcd-io/bbolt) — embedded transactional key/value store
+- [go-core-fx/logger](https://github.com/go-core-fx/logger) — zap logger module boltfx decorates
 - [golangci-lint](https://golangci-lint.run/) — linter suite behind `make lint`
 - [Best-README-Template](https://github.com/othneildrew/Best-README-Template) — README structure
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- MARKDOWN LINKS & IMAGES -->
-[contributors-shield]: https://img.shields.io/github/contributors/go-core-fx/template.svg?style=for-the-badge
-[contributors-url]: https://github.com/go-core-fx/template/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/go-core-fx/template.svg?style=for-the-badge
-[forks-url]: https://github.com/go-core-fx/template/network/members
-[stars-shield]: https://img.shields.io/github/stars/go-core-fx/template.svg?style=for-the-badge
-[stars-url]: https://github.com/go-core-fx/template/stargazers
-[issues-shield]: https://img.shields.io/github/issues/go-core-fx/template.svg?style=for-the-badge
-[issues-url]: https://github.com/go-core-fx/template/issues
-[license-shield]: https://img.shields.io/github/license/go-core-fx/template.svg?style=for-the-badge
-[license-url]: https://github.com/go-core-fx/template/blob/master/LICENSE
+[contributors-shield]: https://img.shields.io/github/contributors/go-core-fx/boltfx.svg?style=for-the-badge
+[contributors-url]: https://github.com/go-core-fx/boltfx/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/go-core-fx/boltfx.svg?style=for-the-badge
+[forks-url]: https://github.com/go-core-fx/boltfx/network/members
+[stars-shield]: https://img.shields.io/github/stars/go-core-fx/boltfx.svg?style=for-the-badge
+[stars-url]: https://github.com/go-core-fx/boltfx/stargazers
+[issues-shield]: https://img.shields.io/github/issues/go-core-fx/boltfx.svg?style=for-the-badge
+[issues-url]: https://github.com/go-core-fx/boltfx/issues
+[license-shield]: https://img.shields.io/github/license/go-core-fx/boltfx.svg?style=for-the-badge
+[license-url]: https://github.com/go-core-fx/boltfx/blob/master/LICENSE
